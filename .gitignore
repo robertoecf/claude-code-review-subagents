@@ -1,0 +1,46 @@
+# Credentials & secrets — NEVER commit these
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+credentials.json
+client_secret*.json
+token.json
+auth.json
+*.secret
+*.credentials
+
+# OAuth / GWS / Google auth artifacts
+storage_state.json
+gws-*/
+.notebooklm/
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Node (in case of future tooling)
+node_modules/
+package-lock.json
+
+# Python (in case of future tooling)
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.code-workspace
+
+# Claude Code session artifacts
+.claude/projects/
+.claude/statsig/
+.claude/todos/

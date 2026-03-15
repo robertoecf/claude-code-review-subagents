@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(which codex)",
+      "Bash(test -f *)",
+      "Bash(codex -q *)"
+    ]
+  }
+}
