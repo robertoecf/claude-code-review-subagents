@@ -27,7 +27,7 @@ which codex && test -f ~/.codex/auth.json && echo "CODEX" || echo "NO_CODEX"
 cat << 'TEMPLATE_EOF' > /tmp/cross-model-input.txt
 <filled template>
 TEMPLATE_EOF
-timeout 120 codex exec --full-auto --ephemeral -o /tmp/cross-model-output.md "$(cat /tmp/cross-model-input.txt)"
+timeout 300 codex exec --full-auto --ephemeral -o /tmp/cross-model-output.md "$(cat /tmp/cross-model-input.txt)"
 cat /tmp/cross-model-output.md
 ```
 
@@ -58,7 +58,7 @@ which gemini && test -f ~/.gemini/oauth_creds.json && echo "GEMINI" || echo "NO_
 
 ### Invocation
 ```bash
-cat /tmp/cross-model-input.txt | timeout 120 gemini -p "" -y -m gemini-3.1-pro-preview > /tmp/cross-model-output.md 2>/dev/null
+cat /tmp/cross-model-input.txt | timeout 180 gemini -p "" -y -m gemini-3.1-pro-preview > /tmp/cross-model-output.md 2>/dev/null
 ```
 
 If the command fails or output is empty, try the next model in order:

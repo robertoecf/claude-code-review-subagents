@@ -96,7 +96,7 @@ which codex && test -f ~/.codex/auth.json && echo "CODEX" || echo "NO_CODEX"
 ```
 If CODEX:
 ```bash
-timeout 120 codex exec --full-auto --ephemeral -o /tmp/cross-model-output.md "$(cat /tmp/cross-model-input.txt)"
+timeout 300 codex exec --full-auto --ephemeral -o /tmp/cross-model-output.md "$(cat /tmp/cross-model-input.txt)"
 cat /tmp/cross-model-output.md
 ```
 **If Codex succeeds → STOP. Go to Step 2. Do NOT call Gemini.**
@@ -108,16 +108,16 @@ which gemini && test -f ~/.gemini/oauth_creds.json && echo "GEMINI" || echo "NO_
 If GEMINI available, try models in order (stop at first success):
 ```bash
 # 1. gemini-3.1-pro-preview
-cat /tmp/cross-model-input.txt | timeout 120 gemini -p "" -y -m gemini-3.1-pro-preview > /tmp/cross-model-output.md 2>/dev/null
+cat /tmp/cross-model-input.txt | timeout 180 gemini -p "" -y -m gemini-3.1-pro-preview > /tmp/cross-model-output.md 2>/dev/null
 # If output is empty, try next:
 # 2. gemini-3.1-flash-lite-preview
-cat /tmp/cross-model-input.txt | timeout 120 gemini -p "" -y -m gemini-3.1-flash-lite-preview > /tmp/cross-model-output.md 2>/dev/null
+cat /tmp/cross-model-input.txt | timeout 180 gemini -p "" -y -m gemini-3.1-flash-lite-preview > /tmp/cross-model-output.md 2>/dev/null
 # If empty, try next:
 # 3. gemini-2.5-pro
-cat /tmp/cross-model-input.txt | timeout 120 gemini -p "" -y -m gemini-2.5-pro > /tmp/cross-model-output.md 2>/dev/null
+cat /tmp/cross-model-input.txt | timeout 180 gemini -p "" -y -m gemini-2.5-pro > /tmp/cross-model-output.md 2>/dev/null
 # If empty, try next:
 # 4. gemini-2.5-flash
-cat /tmp/cross-model-input.txt | timeout 120 gemini -p "" -y -m gemini-2.5-flash > /tmp/cross-model-output.md 2>/dev/null
+cat /tmp/cross-model-input.txt | timeout 180 gemini -p "" -y -m gemini-2.5-flash > /tmp/cross-model-output.md 2>/dev/null
 ```
 **Stop at the first model that returns non-empty output.**
 
