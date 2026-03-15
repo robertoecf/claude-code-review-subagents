@@ -1,6 +1,6 @@
 # CLAUDE.md — Claude Code Directives
 
-## Plugin: claude-code-review-subagents v0.2.0
+## Plugin: claude-code-review-subagents v0.4.2
 
 Cross-model adversarial review plugin. Uses external AI models (Codex CLI,
 Gemini CLI) for independent code and plan analysis, with the main session
@@ -8,10 +8,19 @@ performing synthesis.
 
 ## Architecture
 
-- **Courier skills** (haiku): format template → call external CLI → return raw response
-- **Prompt-optimize** (inherit): runs on main session's model, no external call
-- **Router** (haiku): classifies input type, returns routing decision
-- **Main session** (opus): synthesizes external findings with its own analysis
+- All skills use `model: inherit` (main session model, typically opus)
+- Adversarial skills spawn `Agent(run_in_background=true)` with fresh context
+- Subagent calls Codex/Gemini CLI, cross-validates, returns only final output
+- Main session is never blocked during review
+
+## Critical Gotchas
+
+- `model: haiku` in skill frontmatter inherits FULL conversation context — blows 200k limit in long sessions. Use `model: inherit` + `Agent(model=haiku)` if you need haiku with fresh context.
+- `"skills": "./skills/"` is REQUIRED in plugin.json for Claude Code to discover SKILL.md files
+- Plugin cache lives at `~/.claude/plugins/cache/` — must be manually updated after source changes during dev
+- Global gitignore at `~/.config/git/ignore` blocks `.claude/settings.local.json` — use `git add -f` to include it
+- Codex CLI (GPT-5.4 reasoning:high) needs 300s timeout, not 120s
+- Gemini CLI: `-p` for non-interactive, `-y` for auto-accept. Model cascade: 3.1-pro → 3.1-flash-lite → 2.5-pro → 2.5-flash
 
 ## Tool Preferences
 
@@ -21,10 +30,25 @@ performing synthesis.
 
 ## Available Skills
 
-- `/adversarial-plan-review` — cross-model plan validation (haiku courier → Codex/Gemini)
-- `/adversarial-code-review` — cross-model code red-team review (haiku courier → Codex/Gemini)
+- `/adversarial-plan-review` — background agent: Codex/Gemini critique → cross-validate → revised plan
+- `/adversarial-code-review` — background agent: Codex/Gemini red-team → cross-validate → critics
 - `/prompt-optimize` — prompt analysis and optimization (runs on main session model)
 - `/review-all` — router that classifies input and suggests the right skill
+
+## Fallback Chain (single-model rule)
+
+Call ONLY the first available. Stop at first success.
+1. Codex CLI (GPT-5.4) — `codex exec --full-auto --ephemeral` (timeout 300s)
+2. Gemini cascade: `gemini-3.1-pro-preview` → `3.1-flash-lite-preview` → `2.5-pro` → `2.5-flash` (timeout 180s)
+3. Claude-only (last resort)
+
+## Plugin Dev Workflow
+
+- Edit source at `/Users/mac/Documents/Repos/claude-plugins/claude-code-review-subagents/`
+- Copy to cache: `cp <src>/skills/*/SKILL.md ~/.claude/plugins/cache/claude-code-review-subagents/claude-code-review-subagents/0.2.0/skills/*/`
+- Reload: `/reload-plugins`
+- Skill invocation requires fully qualified name: `claude-code-review-subagents:adversarial-plan-review`
+- Install via marketplace: `claude plugin marketplace add <path>` then `claude plugin install <name>`
 
 ## File Size Discipline
 
