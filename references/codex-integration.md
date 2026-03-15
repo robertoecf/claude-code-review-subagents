@@ -1,5 +1,14 @@
 # Codex CLI Integration Reference
 
+## Role in This Plugin
+
+Codex CLI is the PRIMARY external model in the fallback chain.
+It's used by adversarial skills as a courier target — haiku formats
+a template, calls Codex, captures the response.
+
+For the full fallback chain (Codex → Gemini → unavailable), see
+`references/fallback-chain.md`.
+
 ## Environment
 
 - **Binary**: `/opt/homebrew/bin/codex` (v0.114.0+)
@@ -10,73 +19,40 @@
 ## Detection
 
 ```bash
-which codex && test -f ~/.codex/auth.json && echo "CODEX_AVAILABLE" || echo "CODEX_UNAVAILABLE"
+which codex && test -f ~/.codex/auth.json && echo "CODEX" || echo "NO_CODEX"
 ```
 
-Both conditions must pass. If either fails, skip Codex entirely.
+## Template-Based Invocation
 
-## Invocation Patterns
-
-### Non-interactive exec (preferred)
 ```bash
-codex exec --full-auto --ephemeral -o /tmp/codex-review-output.md "<prompt>"
+cat << 'TEMPLATE_EOF' > /tmp/cross-model-input.txt
+<filled template>
+TEMPLATE_EOF
+timeout 120 codex exec --full-auto --ephemeral -o /tmp/cross-model-output.md "$(cat /tmp/cross-model-input.txt)"
+cat /tmp/cross-model-output.md
 ```
 
-### Git review (built-in)
+## Git Review Invocation
+
 ```bash
-codex review --uncommitted                  # staged + unstaged + untracked
-codex review --base main                    # diff against branch
-codex review --commit <sha>                 # specific commit
+codex review --uncommitted 2>&1 | tee /tmp/cross-model-output.md
+codex review --base main 2>&1 | tee /tmp/cross-model-output.md
 ```
 
-### Key flags
+## Key Flags
+
 | Flag | Purpose |
 |------|---------|
 | `--full-auto` | No approval prompts, sandboxed workspace-write |
 | `--ephemeral` | Don't persist session files |
 | `-o <file>` | Write final agent message to file |
-| `-m <model>` | Override model (e.g., `-m o3`) |
+| `-m <model>` | Override model |
 | `-C <dir>` | Set working directory |
-| `--json` | JSONL event stream output |
-| `-c model_reasoning_effort="high"` | Override reasoning effort |
-
-## When to Use
-
-- Cross-model validation of security/robustness findings
-- Git diff reviews via `codex review`
-- Codebase feasibility checks
-- Any review where two model families seeing the same input adds confidence
-
-## When NOT to Use
-
-- Simple reviews with obvious findings
-- When auth is missing (detection fails)
-- Extremely large inputs (>2000 lines) without chunking
-
-## Graceful Degradation
-
-If Codex is unavailable, all analysis runs within Claude only. No skill
-should fail or degrade quality because Codex is missing. Codex findings
-are additive, never required.
-
-## Timeout
-
-Always wrap with `timeout 120` for non-interactive calls:
-```bash
-timeout 120 codex exec --full-auto --ephemeral -o /tmp/codex-review-output.md "<prompt>"
-```
+| `--json` | JSONL event stream |
 
 ## Cleanup
 
-Remove temp files after every Codex invocation:
+Always run after every invocation:
 ```bash
-rm -f /tmp/codex-review-input.txt /tmp/codex-review-output.md
+rm -f /tmp/cross-model-input.txt /tmp/cross-model-output.md
 ```
-
-## Disagreement Handling
-
-When Claude and Codex disagree:
-1. Flag the disagreement explicitly in output
-2. Present both perspectives with reasoning
-3. Take the more conservative (higher severity) assessment
-4. Tag with `[cross-model disagreement]`

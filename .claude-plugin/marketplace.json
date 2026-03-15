@@ -5,14 +5,14 @@
     "email": "robertoecf@gmail.com"
   },
   "metadata": {
-    "description": "Review triad plugin for Claude Code: prompt optimization, adversarial red-team review, plan validation, and intelligent orchestration.",
-    "version": "0.1.0"
+    "description": "Cross-model adversarial review plugin for Claude Code.",
+    "version": "0.2.0"
   },
   "plugins": [
     {
       "name": "claude-code-review-subagents",
-      "description": "Review triad: prompt optimization, adversarial red-team review, plan validation, and an orchestrator that routes reviews intelligently.",
-      "version": "0.1.0",
+      "description": "Cross-model adversarial review: sends plans and code to external models (Codex CLI, Gemini CLI) for independent analysis.",
+      "version": "0.2.0",
       "source": "./",
       "author": {
         "name": "Roberto",

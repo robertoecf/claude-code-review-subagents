@@ -1,37 +1,31 @@
 # CLAUDE.md — Claude Code Directives
 
-## Plugin: claude-code-review-subagents v0.1.0
+## Plugin: claude-code-review-subagents v0.2.0
 
-Review triad plugin providing prompt optimization, adversarial red-team
-review, plan validation, and intelligent orchestration.
+Cross-model adversarial review plugin. Uses external AI models (Codex CLI,
+Gemini CLI) for independent code and plan analysis, with the main session
+performing synthesis.
+
+## Architecture
+
+- **Courier skills** (haiku): format template → call external CLI → return raw response
+- **Prompt-optimize** (inherit): runs on main session's model, no external call
+- **Router** (haiku): classifies input type, returns routing decision
+- **Main session** (opus): synthesizes external findings with its own analysis
 
 ## Tool Preferences
 
 - Use `Read` over `cat` / `head` / `tail`
 - Use `Grep` over `grep` / `rg`
 - Use `Glob` over `find` / `ls`
-- Use `Edit` over `sed` / `awk`
 
-## Skill Invocation
+## Available Skills
 
-Available skills (invoke via `/command`):
-- `/prompt-optimize` — analyze and optimize prompts, system instructions, skill definitions
-- `/adversarial-review` — red-team review of code, configs, plans, or prompts
-- `/plan-review` — validate implementation plans before execution
-- `/review-all` — orchestrator that routes to the right reviewer(s)
-
-## Agent Spawning (Orchestrator)
-
-The `/review-all` orchestrator uses the `Agent` tool to run reviewers in
-parallel when input contains multiple content types. Use `subagent_type`
-for specialized routing.
+- `/adversarial-plan-review` — cross-model plan validation (haiku courier → Codex/Gemini)
+- `/adversarial-code-review` — cross-model code red-team review (haiku courier → Codex/Gemini)
+- `/prompt-optimize` — prompt analysis and optimization (runs on main session model)
+- `/review-all` — router that classifies input and suggests the right skill
 
 ## File Size Discipline
 
-No single file in this plugin should exceed 500 lines. If a skill needs
-more space, decompose into referenced files under `references/`.
-
-## Review-Only Constraint
-
-All skills in this plugin are strictly review-only. They read and analyze
-but never modify the target codebase. Output is findings + recommendations.
+No single file in this plugin should exceed 500 lines.

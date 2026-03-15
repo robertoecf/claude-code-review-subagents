@@ -1,7 +1,7 @@
 {
   "name": "claude-code-review-subagents",
-  "version": "0.1.0",
-  "description": "Review triad for Claude Code: prompt optimization, adversarial red-team review, plan validation, and an orchestrator that routes reviews intelligently.",
+  "version": "0.2.0",
+  "description": "Cross-model adversarial review plugin: sends plans and code to external models (Codex CLI, Gemini CLI) for independent analysis, with Claude performing synthesis.",
   "author": {
     "name": "Roberto",
     "email": "robertoecf@gmail.com"

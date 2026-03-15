@@ -1,63 +1,44 @@
 # AGENTS.md — Universal Review Agent Guidelines
 
-## Identity
+## Plugin Architecture
 
-This plugin provides specialized review agents for Claude Code. All agents
-are review-only — they analyze, critique, and recommend. They never implement.
+This plugin uses a **courier pattern**: haiku subagents format templates,
+call external models (Codex CLI, Gemini CLI), capture responses, and
+return raw findings to the main session (opus) for synthesis.
 
-## Output Integrity
+## Agent Roles
 
-Every finding MUST include:
+| Role | Model | What it does |
+|------|-------|-------------|
+| Courier (adversarial skills) | haiku | Formats template → calls external CLI → returns raw output |
+| Analyzer (prompt-optimize) | inherit | Runs analysis using main session's model |
+| Router (review-all) | haiku | Classifies input → returns routing decision |
+| Synthesizer (main session) | opus | Cross-validates, flags disagreements, produces unified output |
+
+## Courier Rules
+
+Courier agents (haiku) MUST:
+1. Never analyze the input themselves
+2. Never modify the external model's response
+3. Always try the full fallback chain (Codex → Gemini → inform user)
+4. Always clean up temp files, even on error
+5. Always include which model was used in the return payload
+6. Always include synthesis instructions for the main session
+
+## Output Integrity (for synthesis by main session)
+
+Every finding in the final synthesis MUST include:
 1. **Severity**: P0 (critical) / P1 (high) / P2 (medium) / P3 (low)
 2. **Evidence**: direct quote, line reference, or concrete scenario
-3. **Recommendation**: specific, actionable fix — not vague guidance
+3. **Recommendation**: specific, actionable fix
 
-Findings without evidence are not findings. Downgrade or drop them.
+## Cross-Model Synthesis Format
 
-## Per-Finding Format
-
-```markdown
-### [P0|P1|P2|P3] [category]: Title
-- **Evidence**: [quote or reference]
-- **Problem**: [what's wrong and why it matters]
-- **Options**:
-  - A) [option] — effort: [low/med/high], effectiveness: [partial/full]
-  - B) [option] — effort: [low/med/high], effectiveness: [partial/full]
-  - C) Accept risk — [consequences]
-- **Recommendation**: [specific choice with reasoning]
-```
-
-## Token Discipline
-
-Each skill defines its own token budget as a hard cap. These are not
-guidelines — they are limits. If your output exceeds the budget, cut
-lower-severity findings first.
-
-## Review-Only Protocol
-
-- Never write implementation code in output
-- Never modify the files being reviewed
-- Never create new files in the reviewed project
-- Present options; let the user choose
-
-## Honesty Rules
-
-- When a review is clean, say so. Do not manufacture findings.
-- When you're uncertain about severity, say so. Use confidence tags:
-  `[high confidence]`, `[medium confidence]`, `[low confidence]`
-- When input is ambiguous, ask — don't guess
-
-## Codex CLI (Optional Enhancement)
-
-All skills can optionally use Codex CLI for cross-model validation.
-See `references/codex-integration.md` for detection and usage patterns.
-Codex is never required — all analysis works without it.
-
-## Input Handling
-
-- No input provided → ask for it (name what you need)
-- Input type mismatch → inform user, suggest the correct skill
-- Input too short (<20 tokens) → provide quick feedback, skip full analysis
+When the main session synthesizes external model findings:
+- `[cross-validated]` — both Claude and external model agree (high confidence)
+- `[external-only]` — only external model caught this (needs review)
+- `[claude-only]` — only Claude caught this (needs review)
+- `[severity disagreement]` — models disagree on severity (take higher)
 
 ## Severity Scale
 
@@ -67,3 +48,14 @@ Codex is never required — all analysis works without it.
 | P1 | High — significant risk, likely failure mode | Should fix in this iteration |
 | P2 | Medium — quality issue, minor risk | Fix when convenient |
 | P3 | Low — style, minor optimization | Optional improvement |
+
+## Fallback Chain
+
+See `references/fallback-chain.md` for detection and invocation patterns.
+Order: Codex CLI (GPT-5.4) → Gemini CLI (gemini-2.5-pro) → inform user.
+
+## Honesty Rules
+
+- When a review is clean, say so. Do not manufacture findings.
+- When uncertain about severity, use confidence tags.
+- When input is ambiguous, ask — don't guess.

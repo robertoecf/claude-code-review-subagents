@@ -1,7 +1,8 @@
 ---
 name: prompt-optimize
 description: "Analyze and optimize prompts (system prompts, agent instructions, skill definitions). Finds clarity issues, token waste, instruction conflicts, and structural problems. Returns improved version with diff and reasoning."
-version: 0.1.0
+version: 0.2.0
+model: inherit
 allowed-tools: ["Read", "Grep", "Glob", "Bash"]
 triggers:
   - "prompt.?optimi"

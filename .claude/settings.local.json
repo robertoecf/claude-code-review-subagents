@@ -2,12 +2,14 @@
   "permissions": {
     "allow": [
       "Bash(which codex)",
+      "Bash(which gemini)",
       "Bash(test -f *)",
       "Bash(codex exec *)",
       "Bash(codex review *)",
       "Bash(timeout 120 codex *)",
-      "Bash(cat /tmp/codex-review-output.md)",
-      "Bash(rm -f /tmp/codex-review-*)"
+      "Bash(gemini -p *)",
+      "Bash(cat /tmp/cross-model-*)",
+      "Bash(rm -f /tmp/cross-model-*)"
     ]
   }
 }
