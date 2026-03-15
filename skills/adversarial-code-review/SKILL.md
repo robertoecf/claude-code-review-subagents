@@ -66,14 +66,10 @@ You are an adversarial code reviewer (red-team). Your job:
 
 ## Step 1: Call External Model
 
-Check availability and call the first available:
+**CRITICAL: Call ONLY the FIRST available model. STOP as soon as one succeeds.
+Do NOT call multiple models.**
 
-Primary — Codex CLI:
-```bash
-which codex && test -f ~/.codex/auth.json && echo "CODEX" || echo "NO_CODEX"
-```
-
-If CODEX available:
+### Write the template first:
 ```bash
 cat << 'TEMPLATE_EOF' > /tmp/cross-model-input.txt
 You are a red-team security and reliability analyst.
@@ -92,21 +88,45 @@ Per finding: P0-P3 severity, step-by-step attack/failure scenario,
 likelihood, impact, exploit difficulty, mitigation A/B/C, recommendation.
 Document exploit chains where findings combine.
 TEMPLATE_EOF
-timeout 120 codex exec --full-auto --ephemeral -o /tmp/cross-model-output.md "$(cat /tmp/cross-model-input.txt)"
-cat /tmp/cross-model-output.md
-rm -f /tmp/cross-model-input.txt /tmp/cross-model-output.md
 ```
 
-Fallback — Gemini CLI:
+### Try Codex CLI first:
+```bash
+which codex && test -f ~/.codex/auth.json && echo "CODEX" || echo "NO_CODEX"
+```
+If CODEX:
+```bash
+timeout 120 codex exec --full-auto --ephemeral -o /tmp/cross-model-output.md "$(cat /tmp/cross-model-input.txt)"
+cat /tmp/cross-model-output.md
+```
+**If Codex succeeds → STOP. Go to Step 2. Do NOT call Gemini.**
+
+### If Codex unavailable or fails, try Gemini cascade:
 ```bash
 which gemini && test -f ~/.gemini/oauth_creds.json && echo "GEMINI" || echo "NO_GEMINI"
 ```
-If GEMINI available, pipe the same template to:
+If GEMINI available, try models in order (stop at first success):
 ```bash
-cat /tmp/cross-model-input.txt | gemini -p "" -y -m gemini-2.5-pro
+# 1. Best: gemini-3.1-pro-preview
+cat /tmp/cross-model-input.txt | timeout 120 gemini -p "" -y -m gemini-3.1-pro-preview > /tmp/cross-model-output.md 2>/dev/null
+# If output is empty, try next:
+# 2. gemini-2.5-pro
+cat /tmp/cross-model-input.txt | timeout 120 gemini -p "" -y -m gemini-2.5-pro > /tmp/cross-model-output.md 2>/dev/null
+# If empty, try next:
+# 3. gemini-2.5-flash
+cat /tmp/cross-model-input.txt | timeout 120 gemini -p "" -y -m gemini-2.5-flash > /tmp/cross-model-output.md 2>/dev/null
+# If empty, try next:
+# 4. gemini-3.1-flash-lite-preview
+cat /tmp/cross-model-input.txt | timeout 120 gemini -p "" -y -m gemini-3.1-flash-lite-preview > /tmp/cross-model-output.md 2>/dev/null
 ```
+**Stop at the first model that returns non-empty output.**
 
-If both unavailable: skip external model, do Claude-only analysis.
+### If all unavailable: skip external model, do Claude-only analysis.
+
+### Clean up:
+```bash
+rm -f /tmp/cross-model-input.txt /tmp/cross-model-output.md
+```
 
 ### Agent Prompt Template — Git Review
 

@@ -1,16 +1,19 @@
 # Cross-Model Fallback Chain
 
-## Purpose
+## CRITICAL RULE
 
-All adversarial review skills use external AI models for independent
-analysis. This document defines the detection and invocation patterns
-for each model in the fallback chain.
+Call ONLY the FIRST available model. Do NOT call multiple models.
+Stop as soon as one succeeds.
 
 ## Chain Order
 
-1. **Codex CLI** (GPT-5.4) — primary
-2. **Gemini CLI** (gemini-2.5-pro) — fallback 1
-3. All unavailable — inform user
+```
+1. Codex CLI (GPT-5.4)          ◄── try first
+   ↓ if unavailable
+2. Gemini CLI (model cascade)   ◄── try second
+   ↓ if unavailable
+3. Claude-only                   ◄── last resort
+```
 
 ## Model 1: Codex CLI
 
@@ -19,13 +22,7 @@ for each model in the fallback chain.
 which codex && test -f ~/.codex/auth.json && echo "CODEX" || echo "NO_CODEX"
 ```
 
-### Config
-- Binary: `/opt/homebrew/bin/codex` (v0.114.0+)
-- Auth: `~/.codex/auth.json`
-- Default model: GPT-5.4, reasoning effort: high
-- Sandbox: workspace-write
-
-### Invocation (template-based)
+### Invocation
 ```bash
 cat << 'TEMPLATE_EOF' > /tmp/cross-model-input.txt
 <filled template>
@@ -34,60 +31,50 @@ timeout 120 codex exec --full-auto --ephemeral -o /tmp/cross-model-output.md "$(
 cat /tmp/cross-model-output.md
 ```
 
-### Invocation (git review)
+### Git Review (code review only)
 ```bash
 codex review --uncommitted 2>&1 | tee /tmp/cross-model-output.md
-codex review --base main 2>&1 | tee /tmp/cross-model-output.md
-codex review --commit <sha> 2>&1 | tee /tmp/cross-model-output.md
 ```
 
-### Key Flags
-| Flag | Purpose |
-|------|---------|
-| `--full-auto` | No approval prompts |
-| `--ephemeral` | Don't persist session |
-| `-o <file>` | Write final message to file |
-| `-m <model>` | Override model |
-| `-C <dir>` | Set working directory |
+**If Codex succeeds → STOP. Do not call Gemini.**
 
-## Model 2: Gemini CLI
+## Model 2: Gemini CLI (cascade by capability)
+
+Only reached if Codex is unavailable or fails.
 
 ### Detection
 ```bash
 which gemini && test -f ~/.gemini/oauth_creds.json && echo "GEMINI" || echo "NO_GEMINI"
 ```
 
-### Config
-- Binary: `/opt/homebrew/bin/gemini` (v0.1.11+)
-- Auth: `~/.gemini/oauth_creds.json` (OAuth, robertoecf@gmail.com)
-- Default model: gemini-2.5-pro
+### Model Cascade (try in order, stop at first success)
+
+| Priority | Model ID | Tier |
+|----------|----------|------|
+| 1 | `gemini-3.1-pro-preview` | Most capable |
+| 2 | `gemini-2.5-pro` | Advanced reasoning |
+| 3 | `gemini-2.5-flash` | Fast, balanced |
+| 4 | `gemini-3.1-flash-lite-preview` | Budget fallback |
 
 ### Invocation
 ```bash
-cat << 'TEMPLATE_EOF' | gemini -p "" -y -m gemini-2.5-pro > /tmp/cross-model-output.md 2>/dev/null
-<filled template>
-TEMPLATE_EOF
-cat /tmp/cross-model-output.md
+cat /tmp/cross-model-input.txt | timeout 120 gemini -p "" -y -m gemini-3.1-pro-preview > /tmp/cross-model-output.md 2>/dev/null
 ```
 
-### Key Flags
-| Flag | Purpose |
-|------|---------|
-| `-p "<prompt>"` | Non-interactive mode |
-| `-y` | Auto-accept actions (YOLO mode) |
-| `-m <model>` | Model selection |
-
-## Unavailable Response
-
-If all models in the chain are unavailable, return:
-```markdown
-## Cross-Model Review: UNAVAILABLE
-No external model CLI available.
-- Codex CLI: [not installed | no auth]
-- Gemini CLI: [not installed | no auth]
-Run `codex login` or `gemini auth login` to authenticate.
-The main session can perform Claude-only analysis natively.
+If the command fails or output is empty, try the next model:
+```bash
+cat /tmp/cross-model-input.txt | timeout 120 gemini -p "" -y -m gemini-2.5-pro > /tmp/cross-model-output.md 2>/dev/null
 ```
+
+Continue down the cascade until one succeeds or all fail.
+
+**If any Gemini model succeeds → STOP.**
+
+## Model 3: Claude-only
+
+If both Codex and all Gemini models are unavailable:
+- Inform user: "No external model available. Run `codex login` or `gemini auth login`."
+- The main session can perform Claude-only analysis natively.
 
 ## Cleanup
 
@@ -96,7 +83,10 @@ Always run after every invocation, even on error:
 rm -f /tmp/cross-model-input.txt /tmp/cross-model-output.md
 ```
 
-## Future: Kimi K2.5
+## Return Format
 
-Not currently available on system (no CLI, no API key).
-When available, add as fallback 2 between Gemini and "unavailable".
+Always include which model was actually used:
+```markdown
+- **External model**: [GPT-5.4 via Codex | Gemini 3.1 Pro | Gemini 2.5 Pro | Gemini 2.5 Flash | Gemini 3.1 Flash Lite | Claude-only]
+- **Fallback used**: [no | yes — Codex unavailable, used Gemini 3.1 Pro | yes — Codex + Gemini 3.1 Pro failed, used Gemini 2.5 Flash]
+```
