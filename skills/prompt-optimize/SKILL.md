@@ -1,7 +1,7 @@
 ---
 name: prompt-optimize
 description: "Analyze and optimize prompts (system prompts, agent instructions, skill definitions). Finds clarity issues, token waste, instruction conflicts, and structural problems. Returns improved version with diff and reasoning."
-version: 0.2.0
+version: 0.5.0
 model: inherit
 allowed-tools: ["Read", "Grep", "Glob", "Bash"]
 triggers:
@@ -156,8 +156,8 @@ Token budget: **1000 tokens max**.
 |-----------|----------|
 | No input provided | Ask: "What prompt would you like me to analyze? Paste it or point me to a file." |
 | Input too short (<20 tokens) | Provide quick inline feedback, skip full analysis |
-| Input is code, not a prompt | "This looks like code, not a prompt. Try `/adversarial-review` for code review. If you want me to review this as a prompt anyway, say so." |
-| Input is a plan | "This looks like an implementation plan. Try `/plan-review`. If you want me to optimize the plan's wording as a prompt, say so." |
+| Input is code, not a prompt | "This looks like code, not a prompt. Try `/adversarial-review:coding-adversarial-review` for code review. If you want me to review this as a prompt anyway, say so." |
+| Input is a plan | "This looks like an implementation plan. Try `/adversarial-review:adversarial-plan-review`. If you want me to optimize the plan's wording as a prompt, say so." |
 
 ## Concrete Example
 

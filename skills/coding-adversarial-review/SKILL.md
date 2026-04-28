@@ -1,9 +1,9 @@
 ---
 name: coding-adversarial-review
-description: "Cross-model adversarial review of code, configs, and diffs. Spawns a background subagent that calls Codex CLI / Gemini for external red-team analysis, synthesizes findings, and returns unified critics and recommendations."
-version: 0.4.0
+description: "Cross-host adversarial red-team review of code, configs, and diffs. Routes the review to the agent that is NOT the host — Codex if you are running in Claude Code, Claude Opus if you are running in Codex. Cross-validates against your own independent analysis and returns unified security/robustness critics with severity ratings. Falls back to Gemini cascade, then degraded host-self with explicit warning."
+version: 0.5.0
 model: inherit
-allowed-tools: ["Read", "Grep", "Glob", "Bash", "Agent"]
+allowed-tools: ["Read", "Grep", "Glob", "Bash"]
 triggers:
   - "adversarial.?code"
   - "adversarial.?review"
@@ -17,190 +17,156 @@ triggers:
 
 # Adversarial Code Review
 
-Spawn a background subagent that independently reviews code via an
-external model (Codex CLI / Gemini), cross-validates with its own analysis,
-and returns ONLY unified critics and recommendations.
+Red-team review of code / configs / diffs. The host (you, the agent reading
+this) **must not review your own work** — route the heavy critique to the
+other agent. This SKILL.md is the same in Claude Code and Codex;
+`lib/call-external.sh` detects which host you are and picks the opposite
+partner.
 
-The main session is NOT blocked — it can continue working.
+## Cross-host principle
 
-## How to Execute
+- You are running in **Claude Code** → external reviewer is **Codex**
+- You are running in **Codex** → external reviewer is **Claude (Opus, xhigh)**
+- All externals unavailable → **DEGRADED MODE**: host self-review with explicit
+  banner. Never silently auto-review.
+
+## How to execute
 
 ### 1. Resolve the input
 
-- **Inline code**: use directly
-- **File path**: read the file first, include the content
-- **"review uncommitted"**: note this for the agent (uses `codex review`)
-- **"review --base main"**: note this for the agent
+- **Inline code**: use directly.
+- **File path**: read the file with the `Read` tool, include the content.
+- **"review uncommitted"**: gather the diff via `git diff` (or `git diff --staged`).
+- **"review --base main"**: use `git diff main...HEAD`.
+- **Plan or design doc** → suggest `/adversarial-review:adversarial-plan-review`
+  instead and stop here.
+- **Prompt or skill spec** → suggest `/adversarial-review:prompt-optimize`
+  instead and stop here.
+- No input → ask: "What code should I review? Paste it, point to a file, or
+  say 'review uncommitted'."
 
-If no input: ask "What code should I review? Paste it, point to a file, or say 'review uncommitted'."
-If input is a plan: suggest `/adversarial-plan-review`.
-If input is a prompt: suggest `/prompt-optimize`.
+### 2. Build the external-reviewer prompt
 
-### 2. Spawn the background subagent
-
-Use the Agent tool with `run_in_background=true` and `model=sonnet`.
+Use this template, replacing `{CODE_TEXT}` with the actual code/diff:
 
 ```
-Agent(
-    # inherits main session model (opus by default)
-  run_in_background=true,
-  prompt=<see below>
-)
-```
+You are a red-team security and reliability analyst. Assume everything will
+fail. Prove it with concrete exploit scenarios.
 
-### Agent Prompt Template — Code Review
-
-Build the agent prompt by replacing `{CODE_TEXT}` with the actual code:
-
----
-
-You are an adversarial code reviewer (red-team). Your job:
-1. Send this code to an external model for independent security/robustness analysis
-2. Run your own red-team analysis
-3. Cross-validate both analyses
-4. Return ONLY the final unified critics and recommendations
-
-## The Code to Review
-
+CODE:
 {CODE_TEXT}
 
-## Step 1: Call External Model
+Review for:
+1. SECURITY: injection, auth bypass, data exposure, OWASP top 10, secrets,
+   crypto misuse, deserialization, SSRF.
+2. ROBUSTNESS: race conditions, failure cascades, resource exhaustion,
+   timeouts, error handling gaps, retry storms.
+3. CORRECTNESS: off-by-one, type confusion, null/undef paths, locale/timezone,
+   floating-point, integer overflow.
+4. CONCURRENCY: data races, deadlocks, ordering, cache coherence.
+5. OBSERVABILITY: missing logs at failure points, secrets in logs, metric gaps.
+6. SUPPLY CHAIN: pinned versions? lockfile? typo-squat risk?
+7. BLAST RADIUS: who else does this break if deployed?
 
-**CRITICAL: Call ONLY the FIRST available model. STOP as soon as one succeeds.
-Do NOT call multiple models.**
-
-### Write the template first:
-```bash
-cat << 'TEMPLATE_EOF' > /tmp/cross-model-input.txt
-You are a red-team security and reliability analyst.
-Assume everything will fail. Prove it with concrete exploit scenarios.
-
-Review this code for:
-1. SECURITY: injection, auth bypass, data exposure, OWASP top 10
-2. ROBUSTNESS: race conditions, failure cascades, resource exhaustion, timeouts
-3. COST: API scaling, token budgets, storage growth, compute complexity
-
----
-{CODE_TEXT}
----
-
-Per finding: P0-P3 severity, step-by-step attack/failure scenario,
-likelihood, impact, exploit difficulty, mitigation A/B/C, recommendation.
-Document exploit chains where findings combine.
-TEMPLATE_EOF
+Output language: same as the input.
+Sections: BLOCKERS / SHOULD FIX / NICE TO HAVE / VERDICT
+Per finding: P0–P3 severity, evidence (file:line or quote), problem,
+exploit/scenario, recommendation.
+Verdict: SHIP / REVIEW_NEEDED / DO_NOT_MERGE
 ```
 
-### Try Codex CLI first:
-```bash
-which codex && test -f ~/.codex/auth.json && echo "CODEX" || echo "NO_CODEX"
-```
-If CODEX:
-```bash
-timeout 300 codex exec --full-auto --ephemeral -o /tmp/cross-model-output.md "$(cat /tmp/cross-model-input.txt)"
-cat /tmp/cross-model-output.md
-```
-**If Codex succeeds → STOP. Go to Step 2. Do NOT call Gemini.**
+If the code is over ~6 kB, focus the diff on changed regions and provide
+necessary context — long prompts can stall the external backend.
 
-### If Codex unavailable or fails, try Gemini cascade:
-```bash
-which gemini && test -f ~/.gemini/oauth_creds.json && echo "GEMINI" || echo "NO_GEMINI"
-```
-If GEMINI available, try models in order (stop at first success):
-```bash
-# 1. gemini-3.1-pro-preview
-cat /tmp/cross-model-input.txt | timeout 180 gemini -p "" -y -m gemini-3.1-pro-preview > /tmp/cross-model-output.md 2>/dev/null
-# If output is empty, try next:
-# 2. gemini-3.1-flash-lite-preview
-cat /tmp/cross-model-input.txt | timeout 180 gemini -p "" -y -m gemini-3.1-flash-lite-preview > /tmp/cross-model-output.md 2>/dev/null
-# If empty, try next:
-# 3. gemini-2.5-pro
-cat /tmp/cross-model-input.txt | timeout 180 gemini -p "" -y -m gemini-2.5-pro > /tmp/cross-model-output.md 2>/dev/null
-# If empty, try next:
-# 4. gemini-2.5-flash
-cat /tmp/cross-model-input.txt | timeout 180 gemini -p "" -y -m gemini-2.5-flash > /tmp/cross-model-output.md 2>/dev/null
-```
-**Stop at the first model that returns non-empty output.**
+### 3. Call the external partner
 
-### If all unavailable: skip external model, do Claude-only analysis.
-
-### Clean up:
-```bash
-rm -f /tmp/cross-model-input.txt /tmp/cross-model-output.md
-```
-
-### Agent Prompt Template — Git Review
-
-If the user said "review uncommitted" or "review --base main":
-
----
-
-You are an adversarial code reviewer. Your job:
-1. Use Codex CLI's built-in review command
-2. Run your own analysis on the same diff
-3. Cross-validate and return unified findings
-
-## Step 1: Get the diff and external review
+Pipe the prompt into `lib/call-external.sh` (this script handles host detection,
+routing, anti-recursion, Gemini fallback, and degraded mode):
 
 ```bash
-codex review --uncommitted 2>&1 | tee /tmp/cross-model-output.md
-cat /tmp/cross-model-output.md
-rm -f /tmp/cross-model-output.md
+PLUGIN_DIR="$HOME/Documents/Repos/coding-plugins/adversarial-review"  # or wherever installed
+echo "$PROMPT" | bash "$PLUGIN_DIR/lib/call-external.sh"
+echo "exit=$?"
 ```
 
-Also read the diff yourself:
-```bash
-git diff
-git diff --cached
-```
+Capture:
+- **stdout** = the partner's analysis (or degraded host-self if all failed)
+- **stderr** = operational logs (which partner was used, latency, fallback chain)
+- **exit code** = `0` external success, `2` degraded, `1` error/recursion
 
----
+Notes:
+- Do **not** call `codex exec` or `claude -p` directly — always go through
+  `lib/call-external.sh`. The script enforces anti-recursion via the
+  `ADVERSARIAL_REVIEW_DEPTH` env counter.
+- If exit is `1` (recursion), you are inside a partner-launched call; emit a
+  short note ("recursion guard tripped — parent already running review") and
+  stop. Do not produce a self-review.
 
-## Step 2: Your Own Analysis
+### 4. Run your own independent red-team analysis (host-side)
 
-Independently review for:
-- Security: injection, auth, data exposure, OWASP top 10
-- Robustness: race conditions, failure cascades, resource exhaustion
-- Cost: scaling, token budgets, storage growth
-- Exploit chains: findings that combine into worse scenarios
+Without looking at the partner's output, walk the same checklist (security,
+robustness, correctness, concurrency, observability, supply chain, blast
+radius). This is your host-side draft.
 
-## Step 3: Cross-Validate
+### 5. Cross-validate
 
-- Agreements = `[cross-validated]` (high confidence)
-- Only external = `[external-only]` (flag for review)
-- Only you = `[claude-only]` (include with reasoning)
-- Severity disagreements = take the higher
+Compare host-side findings with the partner's:
 
-## Step 4: Return the Final Output
+| Tag                 | Meaning                                          |
+|---------------------|--------------------------------------------------|
+| `[cross-validated]` | both you and partner caught it (high confidence) |
+| `[external-only]`   | only the partner caught it                       |
+| `[host-only]`       | only you caught it                               |
 
-Return ONLY this — no raw dumps, no intermediate steps:
+On severity disagreements, take the higher of the two.
+
+### 6. Return unified output
+
+Format:
 
 ```markdown
 ## Adversarial Code Review
-- **External model**: [GPT-5.4 via Codex | Gemini 2.5 Pro | Claude-only]
-- **Review mode**: [template | codex review --uncommitted | codex review --base]
-- **Findings**: [N total — X P0, Y P1, Z P2, W P3]
 
-### Critics (severity-ordered)
+- **Mode**: <external=codex | external=claude-opus | external=gemini-3.1-pro | gemini-3.1-flash-lite | gemini-2.5-pro | gemini-2.5-flash | DEGRADED>
+- **Verdict**: SHIP | REVIEW_NEEDED | DO_NOT_MERGE
+- **Findings**: N total — X P0, Y P1, Z P2, W P3
 
-#### [P0|P1|P2|P3]: Finding title [cross-validated | external-only | claude-only]
-- **Attack/failure scenario**: step-by-step
-- **Likelihood**: [low|medium|high]
-- **Impact**: [low|medium|high|critical]
-- **Recommendation**: specific fix with effort estimate
+### Critics
 
-[repeat for each finding]
+#### [P0]: <title>  [cross-validated | external-only | host-only]
+- **Problem**: <what's wrong, why it matters>
+- **Evidence**: <file:line, quote, or scenario>
+- **Exploit / scenario**: <concrete failure mode>
+- **Recommendation**: <specific fix>
 
-### Exploit Chains
-[findings that combine into worse scenarios]
+[…repeat, highest severity first…]
 
-### Recommendations (priority-ordered)
-1. [most critical fix]
-2. [next fix]
+### Recommended Patch
+
+<minimal patch addressing P0/P1, in unified-diff form when practical;
+prose otherwise>
+
+### Key Risks if Merged As-Is
+
+1. <risk> — <impact>
+2. <risk> — <impact>
 ```
 
----
+**If `lib/call-external.sh` exited `2` (degraded mode)**, prepend this banner
+verbatim to the top of the output, before the `## Adversarial Code Review`
+heading:
 
-### 3. Inform the user
+```
+> ⚠️ **DEGRADED MODE** — no external partner reachable. Output below is
+> single-perspective host self-review and violates the cross-host principle.
+> Re-run after restoring access to Codex / Claude / Gemini for higher confidence.
+```
 
-After spawning the agent, tell the user:
-"Adversarial code review running in background via [Codex/Gemini]. You'll be notified when it completes."
+## References
+
+- `references/host-detection.md` — how `lib/detect-host.sh` decides
+- `references/codex-integration.md` — Codex CLI invocation, including the
+  `forced_login_method = "chatgpt"` gotcha for ChatGPT-account auth
+- `references/claude-integration.md` — `claude -p --model opus --effort xhigh`
+- `references/fallback-chain.md` — full external + Gemini cascade + degraded path
+- `references/output-standards.md` — P0–P3 schema, evidence requirements

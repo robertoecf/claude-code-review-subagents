@@ -1,9 +1,9 @@
 ---
 name: adversarial-plan-review
-description: "Cross-model adversarial review of implementation plans. Spawns a background subagent that calls Codex CLI / Gemini for external critique, synthesizes findings, and returns a revised plan with critics and recommendations."
-version: 0.4.0
+description: "Cross-host adversarial review of an implementation plan. Routes the review to the agent that is NOT the host — Codex if you are running in Claude Code, Claude Opus if you are running in Codex. Cross-validates against your own independent analysis, returns a revised plan with critics and a verdict. Falls back to Gemini cascade, then degraded host-self with an explicit warning."
+version: 0.5.0
 model: inherit
-allowed-tools: ["Read", "Grep", "Glob", "Bash", "Agent"]
+allowed-tools: ["Read", "Grep", "Glob", "Bash"]
 triggers:
   - "adversarial.?plan"
   - "review.?plan"
@@ -15,170 +15,144 @@ triggers:
 
 # Adversarial Plan Review
 
-Spawn a background subagent that independently reviews the plan via an
-external model (Codex CLI / Gemini), cross-validates with its own analysis,
-and returns ONLY the final revised plan with critics and recommendations.
+Pre-implementation review of a plan. The host (you, the agent reading this)
+**must not review your own work** — route the heavy critique to the other
+agent. This SKILL.md is the same in Claude Code and Codex; `lib/call-external.sh`
+detects which host you are and picks the opposite partner.
 
-The main session is NOT blocked — it can continue working.
+## Cross-host principle
 
-## How to Execute
+- You are running in **Claude Code** → external reviewer is **Codex**
+- You are running in **Codex** → external reviewer is **Claude (Opus, xhigh)**
+- All externals unavailable → **DEGRADED MODE**: host self-review with explicit
+  banner. Never silently auto-review.
 
-### 1. Extract the plan text from the user's input
+## How to execute
 
-If no plan: ask "What plan should I review? Paste it or point to a file."
-If input is code: suggest `/coding-adversarial-review` instead.
+### 1. Resolve the plan
 
-### 2. Spawn the background subagent
+If user gave plan text inline → use it.
+If user pointed to a file → use the `Read` tool on the file.
+If input is **code or a diff** → suggest `/adversarial-review:coding-adversarial-review`
+instead and stop here.
+If no input → ask: "What plan should I review? Paste it or point to a file."
 
-Use the Agent tool with `run_in_background=true` and `model=sonnet`.
+### 2. Build the external-reviewer prompt
 
-The Agent prompt MUST contain:
-- The complete skill instructions (copied below)
-- The full plan text
-- Nothing else — no conversation history, no context from the main session
+Use this template, replacing `{PLAN_TEXT}` with the actual plan:
 
 ```
-Agent(
-    # inherits main session model (opus by default)
-  run_in_background=true,
-  prompt=<see below>
-)
-```
+You are an adversarial plan reviewer. Assume this plan will fail. Prove it.
 
-### Agent Prompt Template
-
-Build the agent prompt by replacing `{PLAN_TEXT}` with the user's actual plan:
-
----
-
-You are an adversarial plan reviewer. Your job:
-1. Send this plan to an external model for independent critique
-2. Run your own plan validation
-3. Cross-validate both analyses
-4. Return ONLY the final revised plan with critics and recommendations
-
-## The Plan to Review
-
+PLAN:
 {PLAN_TEXT}
-
-## Step 1: Call External Model
-
-**CRITICAL: Call ONLY the FIRST available model. STOP as soon as one succeeds.
-Do NOT call multiple models.**
-
-### Write the template first:
-```bash
-cat << 'TEMPLATE_EOF' > /tmp/cross-model-input.txt
-You are a senior engineering lead and adversarial reviewer.
-Review this implementation plan. Assume it will fail. Prove it.
-
----
-{PLAN_TEXT}
----
 
 Validate for:
-1. Scope alignment — does the plan match stated objectives? Scope creep? Under-scoped?
-2. Missing steps — gaps in the implementation sequence? Testing? Migration?
-3. Dependency ordering — can steps execute in stated order? Circular deps?
-4. Rollback strategy — what happens if step N fails? Is each step reversible?
+1. Scope alignment — does the plan match stated objectives?
+2. Missing steps — gaps in sequence (testing, migration, rollback)?
+3. Dependency ordering — can steps execute as ordered? Circular deps?
+4. Rollback strategy — what if step N fails? Reversible?
 5. Blast radius — what existing functionality is at risk?
-6. Success criteria — are there verifiable completion conditions?
-7. Cost estimate — estimated complexity, files changed, test impact
+6. Success criteria — verifiable completion conditions?
+7. Cost estimate — complexity, files changed, test impact
 
-Per finding: P0-P3 severity, evidence, problem, recommendation.
+Output language: same as the input plan.
+Sections: BLOCKERS / SHOULD FIX / NICE TO HAVE / VERDICT
+Per finding: P0–P3 severity, evidence (line of plan), problem, recommendation.
 Verdict: PROCEED / REVIEW_NEEDED / RETHINK
-Provide an improved version of the plan incorporating all fixes.
-TEMPLATE_EOF
+Provide an improved version of the plan incorporating the recommendations.
 ```
 
-### Try Codex CLI first:
+Keep the prompt focused. If the plan is over ~6 kB, summarize sections instead
+of pasting raw — long prompts can stall the external backend.
+
+### 3. Call the external partner
+
+Pipe the prompt into `lib/call-external.sh` (this script handles host detection,
+routing, anti-recursion, Gemini fallback, and degraded mode):
+
 ```bash
-which codex && test -f ~/.codex/auth.json && echo "CODEX" || echo "NO_CODEX"
-```
-If CODEX:
-```bash
-timeout 300 codex exec --full-auto --ephemeral -o /tmp/cross-model-output.md "$(cat /tmp/cross-model-input.txt)"
-cat /tmp/cross-model-output.md
-```
-**If Codex succeeds → STOP. Go to Step 2. Do NOT call Gemini.**
-
-### If Codex unavailable or fails, try Gemini cascade:
-```bash
-which gemini && test -f ~/.gemini/oauth_creds.json && echo "GEMINI" || echo "NO_GEMINI"
-```
-If GEMINI available, try models in order (stop at first success):
-```bash
-# 1. gemini-3.1-pro-preview
-cat /tmp/cross-model-input.txt | timeout 180 gemini -p "" -y -m gemini-3.1-pro-preview > /tmp/cross-model-output.md 2>/dev/null
-# If output is empty, try next:
-# 2. gemini-3.1-flash-lite-preview
-cat /tmp/cross-model-input.txt | timeout 180 gemini -p "" -y -m gemini-3.1-flash-lite-preview > /tmp/cross-model-output.md 2>/dev/null
-# If empty, try next:
-# 3. gemini-2.5-pro
-cat /tmp/cross-model-input.txt | timeout 180 gemini -p "" -y -m gemini-2.5-pro > /tmp/cross-model-output.md 2>/dev/null
-# If empty, try next:
-# 4. gemini-2.5-flash
-cat /tmp/cross-model-input.txt | timeout 180 gemini -p "" -y -m gemini-2.5-flash > /tmp/cross-model-output.md 2>/dev/null
-```
-**Stop at the first model that returns non-empty output.**
-
-### If all unavailable: skip external model, do Claude-only analysis.
-
-### Clean up:
-```bash
-rm -f /tmp/cross-model-input.txt /tmp/cross-model-output.md
+PLUGIN_DIR="$HOME/Documents/Repos/coding-plugins/adversarial-review"  # or wherever installed
+echo "$PROMPT" | bash "$PLUGIN_DIR/lib/call-external.sh"
+echo "exit=$?"
 ```
 
-## Step 2: Your Own Analysis
+Capture:
+- **stdout** = the partner's analysis (or degraded host-self if all failed)
+- **stderr** = operational logs (which partner was used, latency, fallback chain)
+- **exit code** = `0` external success, `2` degraded, `1` error/recursion
 
-Independently validate the plan for:
-- Scope alignment vs objectives
-- Missing steps (testing, migration, rollback)
-- Dependency ordering
-- Rollback strategy per step
-- Blast radius on existing functionality
-- Success criteria definition
+Notes:
+- Do **not** call `codex exec` or `claude -p` directly — always go through
+  `lib/call-external.sh`. The script enforces anti-recursion via the
+  `ADVERSARIAL_REVIEW_DEPTH` env counter.
+- If exit is `1` (recursion), you are inside a partner-launched call; emit a
+  short note ("recursion guard tripped — parent already running review") and
+  stop. Do not produce a self-review.
 
-## Step 3: Cross-Validate
+### 4. Run your own independent analysis (host-side)
 
-Compare your findings with the external model's findings:
-- Agreements = high confidence
-- Only external model caught = flag for review
-- Only you caught = include with reasoning
-- Severity disagreements = take the higher
+Without looking at the partner's output, walk the same checklist (scope, missing
+steps, ordering, rollback, blast radius, success criteria). This is your
+host-side draft.
 
-## Step 4: Return the Final Output
+### 5. Cross-validate
 
-Return ONLY this — no raw dumps, no intermediate steps:
+Compare host-side findings with the partner's:
+
+| Tag                 | Meaning                                          |
+|---------------------|--------------------------------------------------|
+| `[cross-validated]` | both you and partner caught it (high confidence) |
+| `[external-only]`   | only the partner caught it                       |
+| `[host-only]`       | only you caught it                               |
+
+On severity disagreements, take the higher of the two.
+
+### 6. Return unified output
+
+Format:
 
 ```markdown
 ## Adversarial Plan Review
-- **External model**: [GPT-5.4 via Codex | Gemini 3.1 Pro | Gemini 2.5 Pro | Gemini 2.5 Flash | Gemini 3.1 Flash Lite | Claude-only]
-- **Verdict**: [PROCEED | REVIEW_NEEDED | RETHINK]
-- **Findings**: [N total — X P0, Y P1, Z P2, W P3]
+
+- **Mode**: <external=codex | external=claude-opus | external=gemini-3.1-pro | gemini-3.1-flash-lite | gemini-2.5-pro | gemini-2.5-flash | DEGRADED>
+- **Verdict**: PROCEED | REVIEW_NEEDED | RETHINK
+- **Findings**: N total — X P0, Y P1, Z P2, W P3
 
 ### Critics
 
-#### [P0|P1|P2|P3]: Finding title [cross-validated | external-only | claude-only]
-- **Problem**: what's wrong and why it matters
-- **Evidence**: reference from the plan
-- **Recommendation**: specific fix
+#### [P0]: <title>  [cross-validated | external-only | host-only]
+- **Problem**: <what's wrong, why it matters>
+- **Evidence**: <line of plan, quote>
+- **Recommendation**: <specific fix>
 
-[repeat for each finding, highest severity first]
+[…repeat, highest severity first…]
 
 ### Revised Plan
 
-[the complete improved plan incorporating all recommendations,
-ready to execute — not a diff, the full revised plan]
+<the complete improved plan, ready to execute — full text, not a diff>
 
 ### Key Changes from Original
-1. [change] — [why]
-2. [change] — [why]
+
+1. <change> — <why>
+2. <change> — <why>
 ```
 
----
+**If `lib/call-external.sh` exited `2` (degraded mode)**, prepend this banner
+verbatim to the top of the output, before the `## Adversarial Plan Review`
+heading:
 
-### 3. Inform the user
+```
+> ⚠️ **DEGRADED MODE** — no external partner reachable. Output below is
+> single-perspective host self-review and violates the cross-host principle.
+> Re-run after restoring access to Codex / Claude / Gemini for higher confidence.
+```
 
-After spawning the agent, tell the user:
-"Adversarial plan review running in background via [Codex/Gemini]. You'll be notified when it completes."
+## References
+
+- `references/host-detection.md` — how `lib/detect-host.sh` decides
+- `references/codex-integration.md` — Codex CLI invocation, including the
+  `forced_login_method = "chatgpt"` gotcha for ChatGPT-account auth
+- `references/claude-integration.md` — `claude -p --model opus --effort xhigh`
+- `references/fallback-chain.md` — full external + Gemini cascade + degraded path
+- `references/output-standards.md` — P0–P3 schema, evidence requirements
