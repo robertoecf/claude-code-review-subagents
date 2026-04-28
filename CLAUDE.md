@@ -1,55 +1,75 @@
-# CLAUDE.md — Claude Code Directives
+# CLAUDE.md — Claude Code directives
 
-## Plugin: adversarial-review-coding v0.3.0
+## Plugin: adversarial-review v0.5.0
 
-Adversarial review plugin for coding workflows. Spawns background subagents
-that call external models (Codex CLI, Gemini CLI) for independent red-team
-analysis, cross-validates against Claude, and returns unified findings.
+Cross-host adversarial review for coding workflows. Detects which agent host
+the SKILL.md is running under and routes review to the OTHER agent — Codex
+if the host is Claude Code, Claude (Opus xhigh) if the host is Codex. Falls
+back to Gemini cascade, then degraded host-self with explicit warning.
 
 ## Architecture
 
-- All skills use `model: inherit` (main session model, typically opus)
-- Adversarial skills spawn `Agent(run_in_background=true)` with fresh context
-- Subagent calls Codex/Gemini CLI, cross-validates, returns only final output
-- Main session is never blocked during review
+- **Single source of truth**: `skills/<name>/SKILL.md`. Same file for both hosts.
+- **Cross-host routing** lives in `lib/call-external.sh`. Skills NEVER call
+  `codex exec` or `claude -p` directly — they pipe prompts into the lib script.
+- **Host detection** in `lib/detect-host.sh` (override → env → PPID walk).
+- **Anti-recursion**: `ADVERSARIAL_REVIEW_DEPTH` env counter incremented at
+  each cross-agent hop; refuse on `≥ 1`.
+- **Main session does the synthesis.** No haiku Agent courier subagent. The
+  agent reading the SKILL.md runs `lib/call-external.sh`, runs its own
+  independent analysis, cross-validates, returns unified output.
+- **Degraded mode** when all externals fail: stdout banner `⚠️  DEGRADED MODE`,
+  exit 2 from `call-external.sh`, surfaced at the top of skill output.
 
-## Critical Gotchas
+## Critical gotchas
 
-- `model: haiku` in skill frontmatter inherits FULL conversation context — blows 200k limit in long sessions. Use `model: inherit` + `Agent(model=haiku)` if you need haiku with fresh context.
-- `"skills": "./skills/"` is REQUIRED in plugin.json for Claude Code to discover SKILL.md files
-- Plugin cache lives at `~/.claude/plugins/cache/` — must be manually updated after source changes during dev
-- Global gitignore at `~/.config/git/ignore` blocks `.claude/settings.local.json` — use `git add -f` to include it
-- Codex CLI (GPT-5.4 reasoning:high) needs 300s timeout, not 120s
-- Gemini CLI: `-p` for non-interactive, `-y` for auto-accept. Model cascade: 3.1-pro → 3.1-flash-lite → 2.5-pro → 2.5-flash
+- **`forced_login_method = "chatgpt"`** must be in `~/.codex/config.toml` for
+  ChatGPT-account users — without it, `codex exec` returns 404 "Model not
+  found gpt-5.4" even though TUI works. See `references/codex-integration.md`.
+- **`"skills": "./skills/"`** required in `plugin.json` for Claude Code to
+  discover SKILL.md files.
+- **Plugin cache** lives at `~/.claude/plugins/cache/` — manually update
+  during dev after source changes (or reinstall the plugin).
+- **Global gitignore** at `~/.config/git/ignore` blocks `.claude/settings.local.json` —
+  use `git add -f` to include it.
+- **Codex CLI** needs `--sandbox read-only` for review (we never want writes
+  during a critique pass) and `--skip-git-repo-check` since the prompt is the
+  unit of review.
+- **Long prompts (>~6 kB) can stall Codex backend.** SKILLs should summarize
+  rather than paste raw if the input is huge. Verified empirically — a single
+  meta-review prompt with a 200+ line plan stalled `codex exec` for 20+ min
+  with 0% CPU before being killed.
 
-## Tool Preferences
+## Tool preferences
 
 - Use `Read` over `cat` / `head` / `tail`
 - Use `Grep` over `grep` / `rg`
 - Use `Glob` over `find` / `ls`
+- Use the `Bash` tool to invoke `lib/call-external.sh` — that's the only path
 
-## Available Skills
+## Available skills (slash refs qualified)
 
-- `/adversarial-plan-review` — background agent: Codex/Gemini critique → cross-validate → revised plan
-- `/coding-adversarial-review` — background agent: Codex/Gemini red-team → cross-validate → critics
-- `/prompt-optimize` — prompt analysis and optimization (runs on main session model)
-- `/review-all` — router that classifies input and suggests the right skill
+- `/adversarial-review:adversarial-plan-review` — pre-implementation plan critique
+- `/adversarial-review:coding-adversarial-review` — code/diff red-team
+- `/adversarial-review:prompt-optimize` — prompt engineering analysis (single-host, no external)
+- `/adversarial-review:review-all` — input classifier; routes to one of the above
 
-## Fallback Chain (single-model rule)
+In Codex, the same skills are available as `$<skill-name>` after running
+`bash adapters/codex-skill/install.sh` (symlinks into `~/.codex/skills/`).
 
-Call ONLY the first available. Stop at first success.
-1. Codex CLI (GPT-5.4) — `codex exec --full-auto --ephemeral` (timeout 300s)
-2. Gemini cascade: `gemini-3.1-pro-preview` → `3.1-flash-lite-preview` → `2.5-pro` → `2.5-flash` (timeout 180s)
-3. Claude-only (last resort)
+## Plugin dev workflow
 
-## Plugin Dev Workflow
+- Edit source at `/Users/macbook/Documents/Repos/coding-plugins/adversarial-review/`
+- Reinstall via marketplace:
+  ```bash
+  claude plugin uninstall adversarial-review 2>/dev/null || true
+  claude plugin marketplace add ~/Documents/Repos/coding-plugins/adversarial-review
+  claude plugin install adversarial-review@adversarial-review
+  ```
+- Reload in current session: `/reload-plugins`
+- Skill invocation requires fully qualified name:
+  `/adversarial-review:<skill-name>`
 
-- Edit source at `/Users/mac/Documents/Repos/claude-plugins/adversarial-review-coding/`
-- Copy to cache: `cp <src>/skills/*/SKILL.md ~/.claude/plugins/cache/adversarial-review-coding/adversarial-review-coding/0.3.0/skills/*/`
-- Reload: `/reload-plugins`
-- Skill invocation requires fully qualified name: `adversarial-review-coding:coding-adversarial-review`
-- Install via marketplace: `claude plugin marketplace add <path>` then `claude plugin install <name>`
-
-## File Size Discipline
+## File size discipline
 
 No single file in this plugin should exceed 500 lines.

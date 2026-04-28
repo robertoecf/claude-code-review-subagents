@@ -1,61 +1,86 @@
-# AGENTS.md — Universal Review Agent Guidelines
+# AGENTS.md — review agent guidelines (host-agnostic)
 
-## Plugin Architecture
+## Plugin architecture
 
-This plugin uses a **courier pattern**: haiku subagents format templates,
-call external models (Codex CLI, Gemini CLI), capture responses, and
-return raw findings to the main session (opus) for synthesis.
+This plugin implements a single principle:
 
-## Agent Roles
+> **The partner reviews, never the host.**
 
-| Role | Model | What it does |
-|------|-------|-------------|
-| Courier (adversarial skills) | haiku | Formats template → calls external CLI → returns raw output |
-| Analyzer (prompt-optimize) | inherit | Runs analysis using main session's model |
-| Router (review-all) | haiku | Classifies input → returns routing decision |
-| Synthesizer (main session) | opus | Cross-validates, flags disagreements, produces unified output |
+For every review (plan, code, prompt, or routed-to via `review-all`):
 
-## Courier Rules
+- The agent reading the SKILL.md is the **host**.
+- The host **must not** review the host's own work.
+- The host runs `lib/call-external.sh` to delegate the heavy critique to the
+  OTHER agent (the **partner**).
+- The host then runs its own independent analysis and **cross-validates**
+  against the partner's output, tagging findings as `[cross-validated]`,
+  `[external-only]`, or `[host-only]`.
 
-Courier agents (haiku) MUST:
-1. Never analyze the input themselves
-2. Never modify the external model's response
-3. Always try the full fallback chain (Codex → Gemini → inform user)
-4. Always clean up temp files, even on error
-5. Always include which model was used in the return payload
-6. Always include synthesis instructions for the main session
+There is **no haiku courier subagent** in this version. The host (main
+session) does both the external dispatch and the synthesis. Removed in the
+0.5.0 refactor — the courier added complexity (model inconsistency across
+files, blocking-vs-non-blocking ambiguity) without proportionate value.
 
-## Output Integrity (for synthesis by main session)
+## Cross-host routing
 
-Every finding in the final synthesis MUST include:
-1. **Severity**: P0 (critical) / P1 (high) / P2 (medium) / P3 (low)
-2. **Evidence**: direct quote, line reference, or concrete scenario
-3. **Recommendation**: specific, actionable fix
+| Detected host | Partner                              |
+|---------------|--------------------------------------|
+| `claude`      | Codex (`codex exec --sandbox read-only`) |
+| `codex`       | Claude (`claude -p --model opus --effort xhigh`) |
+| `unknown`     | (skip primary; try Gemini cascade)   |
 
-## Cross-Model Synthesis Format
+Detection happens at every invocation via `lib/detect-host.sh`. See
+`references/host-detection.md` for the priority order and the env-leak
+asymmetry that drives "Codex env first, Claude env second".
 
-When the main session synthesizes external model findings:
-- `[cross-validated]` — both Claude and external model agree (high confidence)
-- `[external-only]` — only external model caught this (needs review)
-- `[claude-only]` — only Claude caught this (needs review)
-- `[severity disagreement]` — models disagree on severity (take higher)
+## Anti-recursion contract
 
-## Severity Scale
+`lib/call-external.sh` reads `ADVERSARIAL_REVIEW_DEPTH` (default `0`). If
+it sees `≥ 1`, it refuses with exit `1`. Before invoking the partner, it
+sets `ADVERSARIAL_REVIEW_DEPTH=1` in the partner's env. So if a launched
+partner ever re-triggers this skill, the guard fires. Never disable.
 
-| Level | Meaning | Action |
-|-------|---------|--------|
-| P0 | Critical — exploitable, data loss, security breach | Must fix before merge/deploy |
-| P1 | High — significant risk, likely failure mode | Should fix in this iteration |
-| P2 | Medium — quality issue, minor risk | Fix when convenient |
-| P3 | Low — style, minor optimization | Optional improvement |
+## Output integrity (for synthesis by the host)
 
-## Fallback Chain
+Every finding in the final output MUST include:
 
-See `references/fallback-chain.md` for detection and invocation patterns.
-Order: Codex CLI (GPT-5.4) → Gemini CLI (gemini-2.5-pro) → inform user.
+1. **Severity** — P0 (critical) / P1 (high) / P2 (medium) / P3 (low)
+2. **Evidence** — direct quote, file:line reference, or concrete scenario
+3. **Recommendation** — specific, actionable fix
+4. **Origin tag** — `[cross-validated]` / `[external-only]` / `[host-only]`
+   (from the cross-validation step)
 
-## Honesty Rules
+## Severity scale
+
+| Level | Meaning                                                | Action                       |
+|-------|--------------------------------------------------------|------------------------------|
+| P0    | Critical — exploitable, data loss, security breach     | Must fix before merge/deploy |
+| P1    | High — significant risk, likely failure mode           | Should fix in this iteration |
+| P2    | Medium — quality issue, minor risk                     | Fix when convenient          |
+| P3    | Low — style, minor optimization                        | Optional improvement         |
+
+## Fallback chain
+
+See `references/fallback-chain.md`. Order: primary partner → Gemini cascade
+→ DEGRADED. **The DEGRADED mode emits an explicit banner** in stdout and
+returns exit 2 from `call-external.sh` so the SKILL knows to surface it to
+the user.
+
+## Honesty rules
 
 - When a review is clean, say so. Do not manufacture findings.
 - When uncertain about severity, use confidence tags.
 - When input is ambiguous, ask — don't guess.
+- When degraded mode triggers, **always show the banner**. Silent self-review
+  is the failure mode this plugin was designed to prevent.
+
+## What this plugin does NOT cover
+
+- **Live multi-turn dialog with the partner.** The call is one-shot:
+  prompt in, analysis out. If you need iteration, the host asks the user;
+  the user asks the partner directly via the partner's interactive UI.
+- **Approval workflows.** This plugin produces critiques, not approvals.
+  Merge / ship decisions remain the user's.
+- **State persistence across calls.** Each `lib/call-external.sh` invocation
+  is independent. State that needs to persist lives in host memory
+  (`~/.claude/projects/<cwd>/memory/` or `~/.codex/memories/`).

@@ -1,93 +1,112 @@
-# Cross-Model Fallback Chain
+# Fallback chain
 
-## CRITICAL RULE
+`lib/call-external.sh` attempts to reach an external partner in a fixed order,
+with explicit logging of which one succeeded. The order is **driven by the
+detected host** — the partner is always the OTHER agent, never the host.
 
-Call ONLY the FIRST available model. Do NOT call multiple models.
-Stop as soon as one succeeds.
+## Critical rule
 
-## Chain Order
+Call ONLY the FIRST available partner. Stop as soon as one succeeds. Do not
+re-rank or fall through after success.
 
+## Cross-host routing
+
+| Detected host | Primary partner            | Tertiary fallback (Gemini cascade) | Last resort                   |
+|---------------|----------------------------|------------------------------------|-------------------------------|
+| `claude`      | Codex (`codex exec`)       | Gemini (4-model cascade below)     | DEGRADED — host self-review   |
+| `codex`       | Claude (`claude -p` Opus xhigh) | Gemini (same cascade)         | DEGRADED — host self-review   |
+| `unknown`     | (skip primary)             | Gemini cascade                     | DEGRADED — host self-review   |
+
+The official `openai/codex-plugin-cc` plugin (slash command
+`/codex:adversarial-review`) is **not** required. We invoke `codex exec`
+directly so the skill works regardless of whether the official plugin is
+installed.
+
+## Detection — primary partner
+
+### Codex (when host=claude)
+```bash
+which codex && test -f ~/.codex/auth.json && echo "CODEX_OK"
 ```
-1. Codex CLI (GPT-5.4)          ◄── try first
-   ↓ if unavailable
-2. Gemini CLI (model cascade)   ◄── try second
-   ↓ if unavailable
-3. Claude-only                   ◄── last resort
-```
+Run `codex login` once on a fresh machine. For ChatGPT-account auth, ensure
+`forced_login_method = "chatgpt"` is set in `~/.codex/config.toml` (see
+[`codex-integration.md`](codex-integration.md)).
 
-## Model 1: Codex CLI
+### Claude (when host=codex)
+```bash
+which claude
+```
+Auth is managed by the Claude desktop / `claude login` flow. `claude -p`
+fails fast if not authenticated.
+
+## Gemini cascade (used by both directions when primary fails)
 
 ### Detection
 ```bash
-which codex && test -f ~/.codex/auth.json && echo "CODEX" || echo "NO_CODEX"
+which gemini && test -f ~/.gemini/oauth_creds.json && echo "GEMINI_OK"
 ```
+
+### Model order (try in this order, stop at first non-empty stdout)
+
+| Priority | Model ID                       | Tier              |
+|----------|--------------------------------|-------------------|
+| 1        | `gemini-3.1-pro-preview`       | 3.1 family best   |
+| 2        | `gemini-3.1-flash-lite-preview`| 3.1 family lite   |
+| 3        | `gemini-2.5-pro`               | 2.5 family best   |
+| 4        | `gemini-2.5-flash`             | 2.5 family lite   |
 
 ### Invocation
 ```bash
-cat << 'TEMPLATE_EOF' > /tmp/cross-model-input.txt
-<filled template>
-TEMPLATE_EOF
-timeout 300 codex exec --full-auto --ephemeral -o /tmp/cross-model-output.md "$(cat /tmp/cross-model-input.txt)"
-cat /tmp/cross-model-output.md
+printf '%s\n' "$prompt" | timeout 180 gemini -p "" -y -m <model> 2>/dev/null
 ```
 
-### Git Review (code review only)
+## Degraded mode
+
+If primary AND Gemini cascade both fail or are unavailable:
+
+- `lib/call-external.sh` exits with code `2` (not `0`, not `1`).
+- Stdout begins with the literal banner:
+  ```
+  ⚠️  DEGRADED MODE — Cross-host principle violated
+  ```
+- The skill calling `call-external.sh` MUST surface this banner at the top
+  of the user-facing output (see SKILL.md format examples).
+- The output is single-perspective (host self-review). Treat with appropriate
+  skepticism.
+
+This is intentional — silently auto-reviewing would be the worst outcome.
+The user should know the principle was bypassed.
+
+## Forced degraded for testing
+
+To test the degraded path **without** breaking auth:
+
 ```bash
-codex review --uncommitted 2>&1 | tee /tmp/cross-model-output.md
+echo "test prompt" | ADVERSARIAL_REVIEW_FORCE_DEGRADED=1 \
+  bash lib/call-external.sh
 ```
 
-**If Codex succeeds → STOP. Do not call Gemini.**
+This skips all externals and emits the banner directly.
 
-## Model 2: Gemini CLI (cascade by capability)
+## Anti-recursion (interaction with cascade)
 
-Only reached if Codex is unavailable or fails.
-
-### Detection
-```bash
-which gemini && test -f ~/.gemini/oauth_creds.json && echo "GEMINI" || echo "NO_GEMINI"
-```
-
-### Model Cascade (try in order, stop at first success)
-
-| Priority | Model ID | Tier |
-|----------|----------|------|
-| 1 | `gemini-3.1-pro-preview` | 3.1 family best |
-| 2 | `gemini-3.1-flash-lite-preview` | 3.1 family lite |
-| 3 | `gemini-2.5-pro` | 2.5 family best |
-| 4 | `gemini-2.5-flash` | 2.5 family lite |
-
-### Invocation
-```bash
-cat /tmp/cross-model-input.txt | timeout 180 gemini -p "" -y -m gemini-3.1-pro-preview > /tmp/cross-model-output.md 2>/dev/null
-```
-
-If the command fails or output is empty, try the next model in order:
-1. `gemini-3.1-pro-preview`
-2. `gemini-3.1-flash-lite-preview`
-3. `gemini-2.5-pro`
-4. `gemini-2.5-flash`
-
-Stop at the first that succeeds.
-
-**If any Gemini model succeeds → STOP.**
-
-## Model 3: Claude-only
-
-If both Codex and all Gemini models are unavailable:
-- Inform user: "No external model available. Run `codex login` or `gemini auth login`."
-- The main session can perform Claude-only analysis natively.
+`ADVERSARIAL_REVIEW_DEPTH` only guards cross-agent recursion (claude↔codex).
+The Gemini cascade does NOT decrement / re-check depth — Gemini doesn't host
+this skill, so there's no recursion risk.
 
 ## Cleanup
 
-Always run after every invocation, even on error:
-```bash
-rm -f /tmp/cross-model-input.txt /tmp/cross-model-output.md
-```
+Operational logs are appended to `/tmp/call-external-codex.err` and
+`/tmp/call-external-claude.err`. Delete to rotate. The script does not
+auto-rotate; persistence by design.
 
-## Return Format
+## What this chain does NOT do
 
-Always include which model was actually used:
-```markdown
-- **External model**: [GPT-5.4 via Codex | Gemini 3.1 Pro | Gemini 2.5 Pro | Gemini 2.5 Flash | Gemini 3.1 Flash Lite | Claude-only]
-- **Fallback used**: [no | yes — Codex unavailable, used Gemini 3.1 Pro | yes — Codex + Gemini 3.1 Pro failed, used Gemini 2.5 Flash]
-```
+- **No Anthropic API key auth path.** Claude side uses the OAuth-managed CLI.
+  If you have only an `ANTHROPIC_API_KEY`, `claude` CLI handles it
+  transparently — no special handling here.
+- **No OpenAI API key auth for Codex.** Codex CLI handles `OPENAI_API_KEY`
+  vs ChatGPT subscription internally; we just call `codex exec`.
+- **No retry on the same model.** If Codex stalls, we go to Gemini. Codex
+  stalls (rare; verified) suggest backend issue, not transient — retry is
+  unlikely to help in the timeout we have.
